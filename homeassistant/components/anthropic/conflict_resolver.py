@@ -32,6 +32,8 @@ class AIConflictResolver:
         self._lock = asyncio.Lock()
         # simple cache: fingerprint -> (response_dict, expiry_dt)
         self._cache: dict[str, Any] = {}
+        # user feedback storage: entity_id -> feedback_text
+        self._user_feedback: dict[str, str] = {}
 
     async def register_intent(self, intent: dict[str, Any]) -> bool:
         """Register an intent.
@@ -160,12 +162,57 @@ class AIConflictResolver:
             lines.append(
                 f"- source={c.get('source')}, action={c.get('service_name') or c.get('action')}, params={json.dumps(c.get('params', {}))}, reason={c.get('reason')}, ts={c.get('timestamp')}"
             )
+
+        # Add user feedback context if available
+        feedback = self._get_feedback_context(entity, conflicts)
+        if feedback:
+            lines.append("")
+            lines.append("User Feedback:")
+            lines.append(feedback)
+
         lines.append("")
         lines.append("Return JSON only with shape:")
         lines.append(
             '{"actions":[{"entity":"...","service_domain":"...","service_name":"...","params":{...},"explanation":"..."}], "fallback":"priority|first|last"}'
         )
         return "\n".join(lines)
+
+    def _get_feedback_context(
+        self, entity: str, conflicts: list[dict[str, Any]]
+    ) -> str:
+        """Get relevant user feedback for this conflict type."""
+        # Check for specific feedback for this entity
+        entity_feedback = self._user_feedback.get(entity)
+        if entity_feedback:
+            return entity_feedback
+
+        # Check for related entity feedback (e.g., light.living_room -> light.kitchen)
+        entity_type = entity.split(".")[0]  # e.g., "light" from "light.kitchen"
+        for feedback_entity, feedback_text in self._user_feedback.items():
+            if feedback_entity.startswith(entity_type):
+                return feedback_text
+
+        return ""
+
+    async def record_user_feedback(self, entity: str, feedback: str):
+        """Record user feedback for a specific entity's conflict resolution."""
+        self._user_feedback[entity] = feedback
+        _LOGGER.info("Recorded user feedback for %s: %s", entity, feedback)
+
+        # Clear cache for this entity to force re-evaluation with new feedback
+        keys_to_remove = [key for key in self._cache if entity in key]
+        for key in keys_to_remove:
+            self._cache.pop(key, None)
+
+        # Fire event for UI/debugging
+        self.hass.bus.async_fire(
+            "anthropic_feedback_recorded",
+            {
+                "entity_id": entity,
+                "feedback": feedback,
+                "timestamp": datetime.now(UTC).isoformat(),
+            },
+        )
 
     def _parse_response(self, text: str) -> dict[str, Any] | None:
         """Attempt to parse JSON from the model output."""
