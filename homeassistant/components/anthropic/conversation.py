@@ -1,5 +1,6 @@
 """Conversation support for Anthropic."""
 
+import logging
 from typing import Literal
 
 from homeassistant.components import conversation
@@ -8,9 +9,11 @@ from homeassistant.const import CONF_LLM_HASS_API, MATCH_ALL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import AnthropicConfigEntry
+from . import AnthropicConfigEntry, conflict_resolver
 from .const import CONF_PROMPT, DOMAIN
 from .entity import AnthropicBaseLLMEntity
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -51,6 +54,8 @@ class AnthropicConversationEntity(
         """Return a list of supported languages."""
         return MATCH_ALL
 
+    _LOGGER.warning("✅ Custom conversation.py loaded and active!")
+
     async def _async_handle_message(
         self,
         user_input: conversation.ConversationInput,
@@ -58,6 +63,24 @@ class AnthropicConversationEntity(
     ) -> conversation.ConversationResult:
         """Call the API."""
         options = self.subentry.data
+
+        # 🧩 Step 1: Detect conflicts before sending prompt
+        conflicts = await conflict_resolver.detect_conflicts(self.hass, user_input.text)
+        if conflicts:
+            _LOGGER.info("Conflict detected: %s", conflicts)
+
+            # 🧠 Step 2: Try to resolve conflicts
+            resolved_text = conflict_resolver.resolve_conflicts(
+                conflicts, user_input.text
+            )
+            _LOGGER.debug("Resolved input: %s", resolved_text)
+
+            # Replace user input with resolved version
+            user_input.text = resolved_text
+        else:
+            _LOGGER.debug("No conflicts detected for input: %s", user_input.text)
+
+        # 🧩 Step 3: Continue with normal Anthropic call
 
         try:
             await chat_log.async_provide_llm_data(
@@ -70,5 +93,8 @@ class AnthropicConversationEntity(
             return err.as_conversation_result()
 
         await self._async_handle_chat_log(chat_log)
+
+        if conflicts:
+            await conflict_resolver.log_conflicts(self.hass, conflicts)
 
         return conversation.async_get_result_from_chat_log(user_input, chat_log)

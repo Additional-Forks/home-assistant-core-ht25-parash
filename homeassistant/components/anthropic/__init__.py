@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from functools import partial
+import logging
 
 import anthropic
 
+from homeassistant.components.anthropic.anthropic_helper import AnthropicHelper
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import CONF_API_KEY, Platform
 from homeassistant.core import HomeAssistant
@@ -17,6 +19,7 @@ from homeassistant.helpers import (
 )
 from homeassistant.helpers.typing import ConfigType
 
+from . import conflict_resolver
 from .const import (
     CONF_CHAT_MODEL,
     DEFAULT_CONVERSATION_NAME,
@@ -57,7 +60,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: AnthropicConfigEntry) ->
     except anthropic.AnthropicError as err:
         raise ConfigEntryNotReady(err) from err
 
+    # Store Anthropic client in entry.runtime_data as before
     entry.runtime_data = client
+
+    # ---------- NEW: Create helper & resolver AFTER client exists ----------
+    helper = AnthropicHelper(hass, client=client)
+    # enable mock mode for demo so we don't call real API
+    helper.mock_mode = True
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN]["anthropic_helper"] = helper
+
+    # initialize resolver using the helper; this will store the resolver in hass.data as well
+    resolver = conflict_resolver.async_setup(hass, helper)
+    hass.data[DOMAIN]["conflict_resolver"] = resolver
+
+    # register a developer-tool service to manually trigger conflict resolution for testing
+    async def _handle_resolve_conflict(call):
+        payload = call.data.get("conflict")
+        if not payload:
+            LOGGER.warning("anthropic.resolve_conflict called with no payload")
+            return
+        entity_id = payload.get("entity_id")
+        conflicts = payload.get("conflicts", [])
+        # call internal handler directly (background)
+        try:
+            await resolver._handle_conflict(entity_id, conflicts)
+        except Exception:
+            LOGGER.exception("Error invoking demo resolve_conflict service")
+
+    hass.services.async_register(DOMAIN, "resolve_conflict", _handle_resolve_conflict)
+    LOGGER.info("Registered service anthropic.resolve_conflict for demo")
+
+    # ------------------------------------------------------------------------
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
