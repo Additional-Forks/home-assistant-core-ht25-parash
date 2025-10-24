@@ -54,7 +54,7 @@ class AnthropicConversationEntity(
         """Return a list of supported languages."""
         return MATCH_ALL
 
-    _LOGGER.warning("✅ Custom conversation.py loaded and active!")
+    _LOGGER.warning("Custom conversation.py loaded and active!")
 
     async def _async_handle_message(
         self,
@@ -64,12 +64,12 @@ class AnthropicConversationEntity(
         """Call the API."""
         options = self.subentry.data
 
-        # 🧩 Step 1: Detect conflicts before sending prompt
+        # Step 1: Detect conflicts before sending prompt
         conflicts = await conflict_resolver.detect_conflicts(self.hass, user_input.text)
         if conflicts:
             _LOGGER.info("Conflict detected: %s", conflicts)
 
-            # 🧠 Step 2: Try to resolve conflicts
+            # Step 2: Try to resolve conflicts
             resolved_text = conflict_resolver.resolve_conflicts(
                 conflicts, user_input.text
             )
@@ -80,7 +80,7 @@ class AnthropicConversationEntity(
         else:
             _LOGGER.debug("No conflicts detected for input: %s", user_input.text)
 
-        # 🧩 Step 3: Continue with normal Anthropic call
+        # Step 3: Continue with normal Anthropic call
 
         try:
             await chat_log.async_provide_llm_data(

@@ -91,7 +91,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: AnthropicConfigEntry) ->
     hass.services.async_register(DOMAIN, "resolve_conflict", _handle_resolve_conflict)
     LOGGER.info("Registered service anthropic.resolve_conflict for demo")
 
-    # ------------------------------------------------------------------------
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

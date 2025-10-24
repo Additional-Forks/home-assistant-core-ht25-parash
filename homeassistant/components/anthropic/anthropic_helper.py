@@ -88,8 +88,6 @@ class AnthropicHelper:
                     "confidence": 0.75,
                 }
             )
-
-        # Real implementation would go here
         _LOGGER.debug(
             "AnthropicHelper: would call Anthropic with prompt length %d", len(prompt)
         )
