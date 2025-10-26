@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 from functools import partial
 import logging
 
 import anthropic
 
 from homeassistant.components.anthropic.anthropic_helper import AnthropicHelper
+from homeassistant.components.anthropic.demo_test import (
+    run_kitchen_demo,
+    run_media_demo,
+    run_user_intervention,
+    reset_user_intervention,
+)
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import CONF_API_KEY, Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import (
     config_validation as cv,
@@ -37,6 +44,27 @@ type AnthropicConfigEntry = ConfigEntry[anthropic.AsyncClient]
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up Anthropic."""
     await async_migrate_integration(hass)
+
+    async def handle_run_kitchen_demo(call: ServiceCall) -> None:
+        await run_kitchen_demo(hass, **call.data)
+
+    async def handle_run_media_demo(call: ServiceCall) -> None:
+        await run_media_demo(hass, **call.data)
+
+    async def handle_run_user_intervention(call: ServiceCall) -> None:
+        await run_user_intervention(hass, **call.data)
+
+    async def handle_reset_user_intervention(call: ServiceCall) -> None:
+        await reset_user_intervention(hass, **call.data)
+
+    hass.services.async_register(DOMAIN, "run_kitchen_demo", handle_run_kitchen_demo)
+    hass.services.async_register(DOMAIN, "run_media_demo", handle_run_media_demo)
+    hass.services.async_register(
+        DOMAIN, "run_user_intervention", handle_run_user_intervention
+    )
+    hass.services.async_register(
+        DOMAIN, "reset_user_intervention", handle_reset_user_intervention
+    )
     return True
 
 
@@ -90,7 +118,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: AnthropicConfigEntry) ->
 
     hass.services.async_register(DOMAIN, "resolve_conflict", _handle_resolve_conflict)
     LOGGER.info("Registered service anthropic.resolve_conflict for demo")
-
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

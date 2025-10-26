@@ -9,7 +9,7 @@ class AnthropicHelper:
     def __init__(self, hass, client=None):
         self.hass = hass
         self._client = client
-        self.mock_mode = False
+        self.mock_mode = True
         self.demo_scenarios = {
             "light.kitchen": {
                 "response": {

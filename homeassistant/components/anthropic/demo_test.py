@@ -1,172 +1,215 @@
 #!/usr/bin/env python3
-"""
-Anthropic Integration Demo Test Script
+"""Anthropic integration demo (mock-friendly)."""
 
-This script demonstrates the Anthropic integration's conflict resolution
-capabilities in mock mode without requiring a real API key.
-
-Usage:
-    python demo_test.py
-"""
-
+from __future__ import annotations
 import asyncio
-import json
-import sys
-from pathlib import Path
+from typing import Any
+import re
 
-# Add the homeassistant directory to the path so we can import the components
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+# ---- Config: helper entity ids (UI shows/edits these) -----------------------
+USER_FEEDBACK_ENTITY = "input_text.demo_user_text"
+OUTPUT_ENTITY = "input_text.demo_output_text"
 
-from homeassistant.components.anthropic.anthropic_helper import AnthropicHelper
-from homeassistant.components.anthropic import conflict_resolver
+# ---- Optional deps: use real helper/resolver if available; else mock --------
+try:
+    from . import anthropic_helper  # type: ignore[attr-defined]
+except Exception:  # pragma: no cover
+    anthropic_helper = None  # noqa: N816
 
-# Global helper and resolver for demo
-_demo_helper = None
-_demo_resolver = None
-
-
-async def test_kitchen_light_conflict():
-    """Test kitchen light conflict resolution."""
-    print(f"Kitchen Light Conflict")
-    print("=" * 40)
-
-    global _demo_helper, _demo_resolver
-
-    if _demo_helper is None:
-        helper = AnthropicHelper(None, client=None)
-        helper.mock_mode = True
-    else:
-        helper = _demo_helper
-
-    # Kitchen light conflict scenario
-    entity = "light.kitchen"
-    prompt = "light.kitchen turn_on turn_off"
-
-    print(f"Entity: {entity}")
-    print()
-
-    # Show the conflict configuration JSON
-    conflict_config = {
-        "entity_id": "light.kitchen",
-        "conflicts": [
-            {
-                "source": "automation.schedule",
-                "service_domain": "light",
-                "service_name": "turn_off",
-                "params": {},
-                "reason": "evening schedule",
-                "timestamp": "2025-10-24T17:00:00Z",
-            },
-            {
-                "source": "automation.motion",
-                "service_domain": "light",
-                "service_name": "turn_on",
-                "params": {"brightness": 200},
-                "reason": "motion detected",
-                "timestamp": "2025-10-24T17:00:01Z",
-            },
-        ],
-    }
-    print("Conflict Configuration:")
-    print(json.dumps(conflict_config, indent=2))
-    print()
-
-    try:
-        # If we have user feedback, show how it would affect the response
-        if _demo_resolver:
-            feedback = _demo_resolver._get_feedback_context(entity, [])
-            if feedback:
-                # Simulate different response based on feedback
-                result = {
-                    "actions": [
-                        {
-                            "entity": "light.kitchen",
-                            "service_domain": "light",
-                            "service_name": "turn_off",
-                            "params": {},
-                            "explanation": "Following user preference: schedule takes priority over user activity",
-                        }
-                    ],
-                    "confidence": 0.95,
-                }
-            else:
-                response = await helper.async_call_anthropic(prompt)
-                result = json.loads(response)
-        else:
-            response = await helper.async_call_anthropic(prompt)
-            result = json.loads(response)
-
-        if "actions" in result and result["actions"]:
-            action = result["actions"][0]
-            confidence = result.get("confidence", 0)
-
-            print(
-                f"Resolution: {action.get('service_domain', 'unknown')}.{action.get('service_name', 'unknown')}"
-            )
-            if action.get("params"):
-                print(f"Parameters: {action.get('params')}")
-            print(f"Confidence: {confidence:.0%}")
-            print(f"Reasoning: {action.get('explanation', 'No explanation')}")
-
-        else:
-            print("ERROR: No actions in response")
-
-    except Exception as e:
-        print(f"ERROR: {e}")
-
-    print()
+try:
+    from . import conflict_resolver  # type: ignore[attr-defined]
+except Exception:  # pragma: no cover
+    conflict_resolver = None  # noqa: N816
 
 
-async def test_user_intervention():
-    """Test user feedback intervention."""
-    print("User Feedback Recorded")
-    print("=" * 40)
+# ======= Small helpers =======================================================
 
-    # Create helper and resolver for the demo
-    global _demo_helper, _demo_resolver
-    _demo_helper = AnthropicHelper(None, client=None)
-    _demo_helper.mock_mode = True
 
-    # Create a mock conflict resolver with feedback storage
-    class MockConflictResolver:
-        def __init__(self):
-            self._user_feedback = {}
+def _choose_preference(text: str, a_terms: list[str], b_terms: list[str]) -> str | None:
+    """
+    Return 'a' | 'b' | None based on free-text like 'X over Y'.
+    a_terms/b_terms are lists of synonyms (lowercase).
+    """
+    s = text.lower()
 
-        async def record_user_feedback(self, entity: str, feedback: str):
-            self._user_feedback[entity] = feedback
-            print(f"Entity: {entity}")
-            print(f"Feedback: {feedback}")
+    def any_term(terms: list[str]) -> str:
+        # Build alternation that preserves word boundaries for multiword phrases
+        alts = [re.escape(t) for t in sorted(terms, key=len, reverse=True)]
+        return r"(?:%s)" % "|".join(alts)
 
-        def _get_feedback_context(self, entity: str, conflicts):
-            return self._user_feedback.get(entity, "")
+    A = any_term(a_terms)
+    B = any_term(b_terms)
 
-    _demo_resolver = MockConflictResolver()
-    await _demo_resolver.record_user_feedback(
-        "light.kitchen",
-        "You should prioritize schedule over user activity for kitchen lights",
+    # Strong signal: "<A> ... over ... <B>" or "<B> ... over ... <A>"
+    m = re.search(rf"\b({A}|{B})\b.*?\bover\b.*?\b({A}|{B})\b", s)
+    if m and m.group(1) != m.group(2):
+        first = m.group(1)
+        # Map first match back to 'a' or 'b'
+        if re.fullmatch(A, first):
+            return "a"
+        if re.fullmatch(B, first):
+            return "b"
+
+    # Weak signal: term frequency
+    score_a = sum(s.count(t) for t in a_terms)
+    score_b = sum(s.count(t) for t in b_terms)
+    if score_a > score_b:
+        return "a"
+    if score_b > score_a:
+        return "b"
+    return None
+
+
+async def _set_text(hass, entity_id: str, value: str) -> None:
+    await hass.services.async_call(
+        "input_text",
+        "set_value",
+        {"entity_id": entity_id, "value": value},
+        blocking=True,
     )
-    print()
 
 
-async def main():
-    """Main demo test function."""
-    print("Anthropic Integration Demo")
-    print("=" * 50)
-    print()
-
-    await test_kitchen_light_conflict()
-    await test_user_intervention()
-    await test_kitchen_light_conflict()
-
-    print("-" * 50)
+async def _logbook(
+    hass, message: str, entity_id: str = "script.anthropic_demo"
+) -> None:
+    await hass.services.async_call(
+        "logbook",
+        "log",
+        {"name": "Conflict Resolver", "message": message, "entity_id": entity_id},
+        blocking=True,
+    )
 
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\nDemo interrupted by user")
-        sys.exit(1)
-    except Exception as e:
-        print(f"\nDemo failed with error: {e}")
-        sys.exit(1)
+async def _syslog(hass, message: str, level: str = "info") -> None:
+    await hass.services.async_call(
+        "system_log",
+        "write",
+        {"message": message, "level": level},
+        blocking=True,
+    )
+
+
+def _state(hass, entity_id: str, default: str = "") -> str:
+    st = hass.states.get(entity_id)
+    return (st.state if st and st.state is not None else default).strip()
+
+
+# ======= Demo behaviors ======================================================
+
+
+async def run_kitchen_demo(hass, log: str | None = None) -> None:
+    feedback = _state(hass, USER_FEEDBACK_ENTITY)
+    pref = _choose_preference(feedback, a_terms=["schedule"], b_terms=["motion"])
+
+    entity = "light.kitchen"
+    conflict = "automation.schedule vs automation.motion"
+
+    # Default: motion wins (turn_on)
+    service, params = "light.turn_on", {"brightness": 200}
+    confidence = 92
+
+    if pref == "a":  # schedule
+        service, params = "light.turn_off", {}
+        confidence = 95
+    elif pref == "b":  # motion
+        service, params = "light.turn_on", {"brightness": 200}
+        confidence = 95
+
+    msg = (
+        f"Entity: {entity}<br>"
+        f"Conflict: {conflict}<br>"
+        f"Resolution: {service} with {params}<br>"
+        f"Confidence: {confidence}%"
+    )
+
+    await _set_text(hass, OUTPUT_ENTITY, msg)
+    await _logbook(hass, msg, entity_id="script.kitchen_light_mock")
+    if log:
+        await _syslog(hass, f"[kitchen_demo] {log}")
+
+
+async def run_user_intervention(hass, message: str | None = None) -> None:
+    """Store user guidance (cache) and log it."""
+    if message is None:
+        message = _state(hass, USER_FEEDBACK_ENTITY, "")
+    await _set_text(hass, USER_FEEDBACK_ENTITY, message)
+
+    await _logbook(hass, message, entity_id="script.user_intervention")
+    await _syslog(hass, f"User intervention: {message}")
+
+
+async def run_media_demo(hass, message: str | None = None) -> None:
+    """Resolve movie night vs phone call using user feedback if provided."""
+    feedback = _state(hass, USER_FEEDBACK_ENTITY)
+    pref = _choose_preference(
+        feedback,
+        a_terms=["movie night", "movie_night", "movie"],
+        b_terms=["phone call", "phone_call", "call", "phone"],
+    )
+
+    entity = "media_player.living_room"
+    conflict = "automation.movie_night vs automation.phone_call"
+
+    # Default: phone call wins (mute)
+    service, params = "media_player.volume_mute", {"is_volume_muted": True}
+    confidence = 88
+
+    if pref == "a":  # movie night wins
+        service, params = (
+            "media_player.play_media",
+            {
+                "media_content_id": "movie",
+                "media_content_type": "movie",
+            },
+        )
+        confidence = 95
+    elif pref == "b":  # phone call wins
+        service, params = "media_player.volume_mute", {"is_volume_muted": True}
+        confidence = 95
+
+    msg = (
+        f"Entity: {entity}<br>"
+        f"Conflict: {conflict}<br>"
+        f"Resolution: {service} with {params}<br>"
+        f"Confidence: {confidence}%"
+    )
+
+    # Brief intro + final message
+    await _set_text(hass, OUTPUT_ENTITY, "Media Player Mock Scenario Started")
+    await _logbook(
+        hass, "Media Player Mock Scenario Started", entity_id="script.media_player_mock"
+    )
+    await _syslog(hass, "CONFLICT RESOLVER: Media Player Mock Scenario")
+    await asyncio.sleep(0.3)
+
+    await _set_text(hass, OUTPUT_ENTITY, msg)
+    await _logbook(hass, msg, entity_id="script.media_player_mock")
+    if message:
+        await _syslog(hass, message)
+
+
+async def reset_user_intervention(hass, clear_output: bool = False) -> None:
+    """Clear user feedback and any in-memory caches in helper/resolver."""
+    # Clear helper entities
+    await _set_text(hass, USER_FEEDBACK_ENTITY, "")
+    if clear_output:
+        await _set_text(hass, OUTPUT_ENTITY, "")
+
+    # Try to reset real modules if present; otherwise noop.
+    if conflict_resolver is not None:
+        if hasattr(conflict_resolver, "reset"):
+            conflict_resolver.reset()  # type: ignore[misc]
+        elif hasattr(conflict_resolver, "_demo_resolver"):
+            conflict_resolver._demo_resolver = None  # type: ignore[attr-defined]
+
+    if anthropic_helper is not None:
+        if hasattr(anthropic_helper, "reset"):
+            anthropic_helper.reset()  # type: ignore[misc]
+        elif hasattr(anthropic_helper, "_demo_helper"):
+            anthropic_helper._demo_helper = None  # type: ignore[attr-defined]
+
+    await _logbook(
+        hass,
+        "User intervention + resolver cache cleared",
+        entity_id="script.user_intervention",
+    )
