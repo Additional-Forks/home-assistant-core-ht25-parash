@@ -9,7 +9,7 @@ class AnthropicHelper:
     def __init__(self, hass, client=None):
         self.hass = hass
         self._client = client
-        self.mock_mode = True
+        self.mock_mode = False
         self.demo_scenarios = {
             "light.kitchen": {
                 "response": {
@@ -88,26 +88,7 @@ class AnthropicHelper:
                     "confidence": 0.75,
                 }
             )
-        else:
-            if not self._client:
-                _LOGGER.error("Anthropic client not available for real API call")
-                return '{"actions": []}'
-
-            try:
-                _LOGGER.debug(
-                    "Calling Anthropic API with prompt length %d", len(prompt)
-                )
-                response = await self._client.messages.create(
-                    model="claude-3-5-sonnet-20241022",
-                    max_tokens=1000,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                # Extract text content from response
-                if response.content and len(response.content) > 0:
-                    return response.content[0].text
-                else:
-                    _LOGGER.error("Empty response from Anthropic API")
-                    return '{"actions": []}'
-            except Exception as e:
-                _LOGGER.error("Anthropic API call failed: %s", e)
-                return '{"actions": []}'
+        _LOGGER.debug(
+            "AnthropicHelper: would call Anthropic with prompt length %d", len(prompt)
+        )
+        return '{"actions": []}'
